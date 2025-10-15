@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lfu
+      --io-threads 4
+      --tcp-keepalive 300
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: ./app
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      WEATHER_TTL: "300"
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  locust:
+    build: ./loadtest
+    environment:
+      TARGET_HOST: http://app:8000
+    depends_on:
+      - app
+    ports:
+      - "8089:8089" # Locust Web UI
+

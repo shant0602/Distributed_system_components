@@ -1,11 +1,23 @@
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from models import POIUpsert, POIResult
 from geo_store import upsert_poi, delete_poi, get_poi, nearby, redis_ok, stats
 
 app = FastAPI(title="Redis GEO Proximity Service", version="1.0.1")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/healthz")
 async def healthz():

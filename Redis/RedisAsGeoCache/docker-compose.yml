@@ -29,3 +29,12 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  locust:
+    build: ./loadtest
+    environment:
+      TARGET_HOST: http://app:8000
+    depends_on:
+      - app
+    ports:
+      - "8089:8089" # Locust Web UI

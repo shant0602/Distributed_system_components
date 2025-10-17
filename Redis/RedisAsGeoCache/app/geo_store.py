@@ -4,8 +4,8 @@ import redis.asyncio as redis
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-CACHE_TTL = int(os.getenv("GEO_CACHE_TTL", "120"))
-TMP_TTL   = int(os.getenv("GEO_TMP_TTL", "15"))
+CACHE_TTL = int(os.getenv("GEO_CACHE_TTL", "30"))
+TMP_TTL   = int(os.getenv("GEO_TMP_TTL", "5"))
 QUERY_QUANT = float(os.getenv("GEO_QUERY_QUANT", "0.0005"))
 
 GEO_KEY         = "poi:geo"
@@ -54,34 +54,28 @@ async def incr(key: str, by: int = 1):
 # ----------------- Core writes -----------------
 
 async def upsert_poi(poi: Dict) -> str:
-    pid = poi["id"]
+    pid = poi["id"]                    # you’re supplying this from Locust
     lat, lon = float(poi["lat"]), float(poi["lon"])
     tags = poi.get("tags") or []
     cat  = poi.get("category")
 
-    # Validate ranges early (helps catch bad inputs)
-    if not (-85.05112878 <= lat <= 85.05112878):
-        raise ValueError(f"lat out of range: {lat}")
-    if not (-180.0 <= lon <= 180.0):
-        raise ValueError(f"lon out of range: {lon}")
+    if not (-85.05112878 <= lat <= 85.05112878): raise ValueError("lat out of range")
+    if not (-180.0 <= lon <= 180.0): raise ValueError("lon out of range")
 
     pipe = r.pipeline()
-    # robust GEOADD
-    pipe.execute_command("GEOADD", GEO_KEY, lon, lat, pid)
+    # Use CH so you can tell if it actually moved (changed=1) or was identical (0)
+    pipe.execute_command("GEOADD", GEO_KEY, "CH", lon, lat, pid)
     pipe.hset(POI_HASH.format(id=pid), mapping={
-        "name": poi["name"],
-        "lat": lat, "lon": lon,
-        "category": cat or "",
-        "tags": _dump(tags),
+        "name": poi["name"], "lat": lat, "lon": lon,
+        "category": cat or "", "tags": _dump(tags),
         "metadata": _dump(poi.get("metadata") or {})
     })
-    if cat:
-        pipe.sadd(CAT_SET.format(cat=cat), pid)
-    for t in tags:
-        pipe.sadd(TAG_SET.format(tag=t), pid)
-    await pipe.execute()
+    if cat: pipe.sadd(CAT_SET.format(cat=cat), pid)
+    for t in tags: pipe.sadd(TAG_SET.format(tag=t), pid)
+    changed, *_ = await pipe.execute()   # changed is 1 if coord updated or new, 0 if same
     await incr(STAT_WRITES)
     return pid
+
 
 async def delete_poi(pid: str):
     pipe = r.pipeline()

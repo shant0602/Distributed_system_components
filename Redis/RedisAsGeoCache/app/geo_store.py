@@ -31,7 +31,7 @@ r = redis.Redis(connection_pool=_pool, decode_responses=True)
 
 def _dump(x): return json.dumps(x, separators=(",", ":"), ensure_ascii=False)
 def _load(s): return None if s is None else json.loads(s)
-def _jitter(ttl: int, max_j: int = 20) -> int: return ttl + random.randint(0, max_j)
+def _jitter(ttl: int, max_j: int = 20) -> int: return ttl + random.randint(0, 2)
 
 def _q(v: float) -> float:
     q = QUERY_QUANT

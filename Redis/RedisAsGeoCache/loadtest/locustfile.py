@@ -1,40 +1,121 @@
 # locustfile.py
-import hashlib
-from locust import HttpUser, task, between, events
+import os, random, uuid
+from locust import HttpUser, task, between
 
-def make_uid(name: str, city: str = "") -> str:
-    # Stable ID derived from name (+optional city). No lat/lon here.
-    base = f"{name.strip().lower()}|{city.strip().lower()}"
-    return hashlib.md5(base.encode()).hexdigest()
+# ------------------- Config -------------------
+BASE_LAT = float(os.getenv("BASE_LAT", 37.3382))        # San Jose
+BASE_LON = float(os.getenv("BASE_LON", -121.8863))
+DRIVERS_PER_USER = int(os.getenv("DRIVERS_PER_USER", 20))
+UPDATE_BATCH = int(os.getenv("UPDATE_BATCH", 5))         # how many drivers to move per tick
+UPDATE_EVERY = (float(os.getenv("DRIVER_MIN_WAIT", 0.1)),
+                float(os.getenv("DRIVER_MAX_WAIT", 0.3)))
+SEARCH_EVERY = (float(os.getenv("DISP_MIN_WAIT", 0.5)),
+                float(os.getenv("DISP_MAX_WAIT", 1.5)))
+RADIUS_KM = float(os.getenv("SEARCH_RADIUS_KM", 10))
+LIMIT = int(os.getenv("SEARCH_LIMIT", 100))
 
-SEEDS = [
-    {"id": make_uid("Cafe A", "San Jose"),         "name":"Cafe A",            "lat":37.3382,"lon":-121.8863,"category":"cafe","tags":["chai"]},
-    {"id": make_uid("Cafe B", "San Francisco"),    "name":"Cafe B",            "lat":37.7749,"lon":-122.4194,"category":"cafe","tags":["coffee"]},
-    {"id": make_uid("Taco Town", "Palo Alto"),     "name":"Taco Town",         "lat":37.4419,"lon":-122.1430,"category":"food","tags":["mexican"]},
-    {"id": make_uid("Curry Spot", "Fremont"),      "name":"Curry Spot",        "lat":37.5483,"lon":-121.9886,"category":"food","tags":["indian"]},
-    {"id": make_uid("Palo Alto Bakery", "Palo Alto"),"name":"Palo Alto Bakery","lat":37.4470,"lon":-122.1600,"category":"bakery","tags":["pastry"]},
-    {"id": make_uid("MV Coffee Lab", "Mountain View"),"name":"MV Coffee Lab",  "lat":37.3861,"lon":-122.0839,"category":"cafe","tags":["third-wave"]},
-    {"id": make_uid("Sunnyvale Tea House","Sunnyvale"),"name":"Sunnyvale Tea House","lat":37.3688,"lon":-122.0363,"category":"cafe","tags":["tea"]},
-    {"id": make_uid("San Mateo Boba","San Mateo"), "name":"San Mateo Boba",    "lat":37.5629,"lon":-122.3255,"category":"cafe","tags":["boba"]},
-    {"id": make_uid("Oakland Slice","Oakland"),    "name":"Oakland Slice",     "lat":37.8044,"lon":-122.2711,"category":"food","tags":["pizza"]},
-    {"id": make_uid("SJ Ramen","San Jose"),        "name":"SJ Ramen",          "lat":37.3352,"lon":-121.8811,"category":"food","tags":["ramen"]},
-    {"id": make_uid("Fremont Diner","Fremont"),    "name":"Fremont Diner",     "lat":37.5483,"lon":-121.9886,"category":"food","tags":["diner"]},
-    {"id": make_uid("Berkeley Cafe","Berkeley"),   "name":"Berkeley Cafe",     "lat":37.8715,"lon":-122.2730,"category":"cafe","tags":["study"]},
-]
+# Movement tuning
+MAX_SPEED = float(os.getenv("MAX_SPEED_DEG", 0.001))     # ~100 m per tick near equator
+TURN_PROB = float(os.getenv("TURN_PROB", 0.1))
+BOUND_BOX_KM = float(os.getenv("BOUND_BOX_KM", 8))       # keep drivers around base
 
-@events.test_start.add_listener
-def seed_once(env, **_):
-    c = env.runner.client
-    for s in SEEDS:
-        c.post("/poi", json=s)  # server upserts by id
+# ------------------- Helpers -------------------
+def km_to_deg_lat(km: float) -> float:
+    return km / 110.574
 
-class GeoUser(HttpUser):
-    wait_time = between(0.05, 0.2)
+def km_to_deg_lon(km: float, lat: float) -> float:
+    import math
+    return km / (111.320 * max(0.01, abs(math.cos(math.radians(lat)))))
+
+LAT_SPAN = km_to_deg_lat(BOUND_BOX_KM)
+LON_SPAN = km_to_deg_lon(BOUND_BOX_KM, BASE_LAT)
+
+def clamp(lat, lon):
+    lat = max(min(lat, BASE_LAT + LAT_SPAN), BASE_LAT - LAT_SPAN)
+    lon = max(min(lon, BASE_LON + LON_SPAN), BASE_LON - LON_SPAN)
+    return lat, lon
+
+def make_payload(d):
+    return {
+        "id": d["id"],
+        "name": d["name"],
+        "lat": d["lat"],
+        "lon": d["lon"],
+        "category": "driver",           # keep lowercase, server normalizes
+        "tags": d["tags"],
+    }
+
+def new_driver(user_prefix: str):
+    # start near base with small random offset
+    lat = BASE_LAT + random.uniform(-LAT_SPAN * 0.2, LAT_SPAN * 0.2)
+    lon = BASE_LON + random.uniform(-LON_SPAN * 0.2, LON_SPAN * 0.2)
+    return {
+        "id": f"driver-{user_prefix}-{uuid.uuid4().hex[:8]}",
+        "name": f"driver-{user_prefix}",
+        "lat": lat,
+        "lon": lon,
+        "tags": ["available"],
+        "_dx": random.uniform(-MAX_SPEED, MAX_SPEED),
+        "_dy": random.uniform(-MAX_SPEED, MAX_SPEED),
+    }
+
+def move_driver(d):
+    if random.random() < TURN_PROB:
+        d["_dx"] = random.uniform(-MAX_SPEED, MAX_SPEED)
+        d["_dy"] = random.uniform(-MAX_SPEED, MAX_SPEED)
+    d["lat"] += d["_dy"]
+    d["lon"] += d["_dx"]
+    d["lat"], d["lon"] = clamp(d["lat"], d["lon"])
+
+print("[INIT] Locustfile loaded")
+
+# ------------------- Single user class (owns 20 drivers) -------------------
+class FleetUser(HttpUser):
+    # unify wait_time to cover both update & search cadences
+    wait_time = between(min(UPDATE_EVERY[0], SEARCH_EVERY[0]),
+                        max(UPDATE_EVERY[1], SEARCH_EVERY[1]))
+
+    def on_start(self):
+        # unique prefix per user (stable for user lifetime)
+        self.user_prefix = uuid.uuid4().hex[:12]
+        # create this user's fleet
+        self.drivers = [new_driver(self.user_prefix) for _ in range(DRIVERS_PER_USER)]
+        self._cursor = 0
+
+        # seed all drivers owned by this user
+        ok = 0
+        for d in self.drivers:
+            r = self.client.post("/poi", json=make_payload(d), name="POST /poi (seed-per-user)")
+            if r.status_code < 300:
+                ok += 1
+        print(f"[SEED] base_url={self.client.base_url} | user={self.user_prefix} | seeded {ok}/{len(self.drivers)}")
 
     @task(3)
-    def search_all(self):
-        self.client.get("/poi/nearby", params={"lat":37.33,"lon":-121.90,"radius_km":50,"limit":20})
+    def move_some_drivers(self):
+        # move a batch of drivers each tick (round-robin)
+        n = len(self.drivers)
+        if n == 0:
+            return
+        end = self._cursor + max(1, min(UPDATE_BATCH, n))
+        for i in range(self._cursor, end):
+            d = self.drivers[i % n]
+            move_driver(d)
+            r = self.client.post("/poi", json=make_payload(d), name="POST /poi (move)")
+            if r.status_code >= 300:
+                # simple error print; Locust will also record request failure
+                print(f"[MOVE][ERR] status={r.status_code} body={r.text[:160]}")
+        self._cursor = end % n
 
     @task(1)
-    def search_cafe(self):
-        self.client.get("/poi/nearby", params={"lat":37.33,"lon":-121.90,"radius_km":50,"limit":10,"category":"cafe"})
+    def nearby_search(self):
+        self.client.get(
+            "/poi/nearby",
+            params={
+                "lat": BASE_LAT,
+                "lon": BASE_LON,
+                "radius_km": RADIUS_KM,
+                "limit": LIMIT,
+                "category": "driver",
+            },
+            name="GET /poi/nearby (drivers)"
+        )

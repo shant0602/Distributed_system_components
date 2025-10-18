@@ -1,134 +1,126 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Redis GEO Cache - Live POI Map</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style>
-        body { margin: 0; padding: 0; }
-        #map { height: 100vh; width: 100vw; }
-        .info { position: absolute; top: 10px; right: 10px; background: white; padding: 10px; border-radius: 5px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .legend { position: absolute; bottom: 10px; left: 10px; background: white; padding: 10px; border-radius: 5px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .legend-item { display: flex; align-items: center; margin: 5px 0; }
-        .legend-color { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; border: 1px solid #000; }
-    </style>
+  <title>Redis GEO Cache - Live POI Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100vw; }
+    .info { position: absolute; top: 10px; right: 10px; background: white; padding: 10px; border-radius: 5px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .legend { position: absolute; bottom: 10px; left: 10px; background: white; padding: 10px; border-radius: 5px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .legend-item { display: flex; align-items: center; margin: 5px 0; }
+    .legend-color { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; border: 1px solid #000; }
+  </style>
 </head>
 <body>
-    <div id="map"></div>
-    <div class="info">
-        <h3>Redis GEO Cache</h3>
-        <div id="stats">Loading...</div>
-        <div id="poi-count">POIs: 0</div>
-        <div id="last-update">Last update: --</div>
-    </div>
-    
-    <div class="legend">
-        <h4>Categories</h4>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #2E8B57;"></div>
-            <span>Cafe</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #FF6347;"></div>
-            <span>Food</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #DAA520;"></div>
-            <span>Bakery</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #4169E1;"></div>
-            <span>Driver</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #696969;"></div>
-            <span>Other</span>
-        </div>
-    </div>
+  <div id="map"></div>
+  <div class="info">
+    <h3>Redis GEO Cache</h3>
+    <div id="stats">Loading...</div>
+    <div id="poi-count">POIs: 0</div>
+    <div id="last-update">Last update: --</div>
+  </div>
 
-    <script>
-        // Initialize map centered on San Jose
-        const map = L.map('map').setView([37.3382, -121.8863], 10);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-        
-        const markers = new Map(); // Track existing markers
-        const categoryColors = {
-            'cafe': '#2E8B57',
-            'food': '#FF6347', 
-            'bakery': '#DAA520',
-            'driver': '#4169E1',
-            'default': '#696969'
-        };
-        
-        async function fetchPOIs() {
-            try {
-                // Get all POIs by searching a large radius around the center
-                const response = await fetch('http://127.0.0.1:8000/poi/nearby?lat=37.3382&lon=-121.8863&radius_km=100&limit=200');
-                const pois = await response.json();
-                
-                // Get stats
-                const statsResponse = await fetch('http://localhost:8000/stats');
-                const stats = await statsResponse.json();
-                console.log("##################$$$$########",stats);
-                updateMap(pois);
-                updateStats(stats, pois.length);
-                
-            } catch (error) {
-                console.error('Error fetching POIs:', error);
-                document.getElementById('stats').innerHTML = 'Error connecting to API';
-            }
+  <div class="legend">
+    <h4>Categories</h4>
+    <div class="legend-item"><div class="legend-color" style="background:#2E8B57;"></div><span>Cafe</span></div>
+    <div class="legend-item"><div class="legend-color" style="background:#FF6347;"></div><span>Food</span></div>
+    <div class="legend-item"><div class="legend-color" style="background:#DAA520;"></div><span>Bakery</span></div>
+    <div class="legend-item"><div class="legend-color" style="background:#4169E1;"></div><span>Driver</span></div>
+    <div class="legend-item"><div class="legend-color" style="background:#696969;"></div><span>Other</span></div>
+  </div>
+
+  <script>
+    const map = L.map('map').setView([37.3382, -121.8863], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM' }).addTo(map);
+
+    const markers = new Map();
+    const categoryColors = {
+      cafe: '#2E8B57',
+      food: '#FF6347',
+      bakery: '#DAA520',
+      driver: '#4169E1',
+      default: '#696969'
+    };
+
+    const NEARBY_URL = 'http://127.0.0.1:8000/poi/nearby?lat=37.3382&lon=-121.8863&radius_km=100&limit=50&category=driver';
+    const STATS_URL = 'http://127.0.0.1:8000/stats';
+
+    async function fetchPOIs() {
+      try {
+        const resp = await fetch(NEARBY_URL, { cache: 'no-store' });
+        const pois = await resp.json();
+
+        const statsResp = await fetch(STATS_URL, { cache: 'no-store' });
+        const stats = await statsResp.json();
+
+        updateMap(pois);
+        updateStats(stats, pois.length);
+      } catch (err) {
+        console.error('Error:', err);
+        document.getElementById('stats').innerHTML = 'Error connecting to API';
+      }
+    }
+
+    function updateMap(pois) {
+      const currentIds = new Set(pois.map(p => p.id));
+
+      for (const [id, marker] of markers) {
+        if (!currentIds.has(id)) {
+          map.removeLayer(marker);
+          markers.delete(id);
         }
-        
-        function updateMap(pois) {
-            // Remove markers that no longer exist
-            const currentIds = new Set(pois.map(p => p.id));
-            for (const [id, marker] of markers) {
-                if (!currentIds.has(id)) {
-                    map.removeLayer(marker);
-                    markers.delete(id);
-                }
-            }
-            
-            // Add/update markers
-            pois.forEach(poi => {
-                if (!markers.has(poi.id)) {
-                    const color = categoryColors[poi.category] || categoryColors.default;
-                    const marker = L.circleMarker([poi.lat, poi.lon], {
-                        radius: 8,
-                        fillColor: color,
-                        color: '#000',
-                        weight: 1,
-                        opacity: 1,
-                        fillOpacity: 0.8
-                    }).addTo(map);
-                    
-                    marker.bindPopup(`
-                        <b>${poi.name}</b><br>
-                        Category: ${poi.category || 'N/A'}<br>
-                        Tags: ${poi.tags ? poi.tags.join(', ') : 'N/A'}<br>
-                        Distance: ${poi.distance_km ? poi.distance_km.toFixed(2) + ' km' : 'N/A'}
-                    `);
-                    
-                    markers.set(poi.id, marker);
-                }
-            });
+      }
+
+      pois.forEach(poi => {
+        const color = categoryColors[poi.category] || categoryColors.default;
+
+        if (markers.has(poi.id)) {
+          // update existing marker position
+          const m = markers.get(poi.id);
+          m.setLatLng([poi.lat, poi.lon]);
+          m.setStyle?.({ fillColor: color });
+          m.bindPopup(popupHtml(poi));
+        } else {
+          // create new marker
+          const marker = L.circleMarker([poi.lat, poi.lon], {
+            radius: 8,
+            fillColor: color,
+            color: '#000',
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.8
+          }).addTo(map);
+          marker.bindPopup(popupHtml(poi));
+          markers.set(poi.id, marker);
         }
-        
-        function updateStats(stats, poiCount) {
-            document.getElementById('stats').innerHTML = `
-                Queries: ${stats.queries}<br>
-                Cache Hits: ${stats.cache_hits}<br>
-                Cache Misses: ${stats.cache_misses}<br>
-                Hit Ratio: ${stats.hit_ratio ? (stats.hit_ratio * 100).toFixed(1) + '%' : 'N/A'}<br>
-                Writes: ${stats.writes}
-            `;
-            document.getElementById('poi-count').innerHTML = `POIs: ${poiCount}`;
-            document.getElementById('last-update').innerHTML = `Last update: ${new Date().toLocaleTimeString()}`;
-        }
-        
-        // Initial load and then poll every 3 seconds
-        fetchPOIs();
-        setInterval(fetchPOIs, 3000);
-    </script>
+      });
+    }
+
+    function popupHtml(poi) {
+      return `
+        <b>${poi.name}</b><br>
+        Category: ${poi.category || 'N/A'}<br>
+        Tags: ${poi.tags ? poi.tags.join(', ') : 'N/A'}<br>
+        Distance: ${poi.distance_km != null ? poi.distance_km.toFixed(2) + ' km' : 'N/A'}
+      `;
+    }
+
+    function updateStats(stats, poiCount) {
+      document.getElementById('stats').innerHTML = `
+        Queries: ${stats.queries}<br>
+        Cache Hits: ${stats.cache_hits}<br>
+        Cache Misses: ${stats.cache_misses}<br>
+        Hit Ratio: ${stats.hit_ratio ? (stats.hit_ratio * 100).toFixed(1) + '%' : 'N/A'}<br>
+        Writes: ${stats.writes}
+      `;
+      document.getElementById('poi-count').innerText = `POIs: ${poiCount}`;
+      document.getElementById('last-update').innerText = `Last update: ${new Date().toLocaleTimeString()}`;
+    }
+
+    fetchPOIs();
+    setInterval(fetchPOIs, 3000);
+  </script>
 </body>
 </html>
